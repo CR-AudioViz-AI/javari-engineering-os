@@ -125,7 +125,7 @@ async function logHealingAction(action: string, projectId: string, success: bool
     success,
     details,
     created_at: new Date().toISOString(),
-  }).catch(() => {});
+  });
 }
 
 export async function GET() {
