@@ -1,11 +1,61 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
-import { sendAlert } from '@/lib/email-alerts';
+import { Resend } from 'resend';
 
 const supabase = createClient(
   process.env.SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_KEY!
 );
+
+const resend = new Resend(process.env.RESEND_API_KEY);
+
+async function sendAlert(payload: {
+  title: string;
+  message: string;
+  severity: string;
+  source?: string;
+  details?: Record<string, unknown>;
+  actionUrl?: string;
+  actionLabel?: string;
+}) {
+  const ALERT_EMAIL = process.env.ALERT_EMAIL || 'royhenderson@craudiovizai.com';
+  const colors: Record<string, string> = {
+    CRITICAL: '#dc2626', HIGH: '#ea580c', MEDIUM: '#ca8a04', LOW: '#2563eb', INFO: '#059669',
+  };
+  const emojis: Record<string, string> = {
+    CRITICAL: '🚨', HIGH: '⚠️', MEDIUM: '📢', LOW: '📝', INFO: 'ℹ️',
+  };
+  const color = colors[payload.severity] || '#6b7280';
+  const emoji = emojis[payload.severity] || '📌';
+  const timestamp = new Date().toLocaleString('en-US', { timeZone: 'America/New_York' });
+
+  const html = `
+<!DOCTYPE html>
+<html><body style="font-family: sans-serif; background: #f3f4f6; padding: 20px;">
+<div style="max-width: 600px; margin: auto;">
+<div style="background: ${color}; color: white; padding: 20px; border-radius: 8px 8px 0 0;">
+<h1>${emoji} ${payload.severity} ALERT</h1><p>${payload.title}</p></div>
+<div style="background: white; padding: 20px; border: 1px solid #e5e7eb;">
+<p><b>Time:</b> ${timestamp} EST</p>
+${payload.source ? `<p><b>Source:</b> ${payload.source}</p>` : ''}
+<div style="background: #f9fafb; border-left: 4px solid ${color}; padding: 16px;">${payload.message}</div>
+${payload.details ? `<pre style="background: #1f2937; color: #e5e7eb; padding: 16px; border-radius: 6px; font-size: 12px;">${JSON.stringify(payload.details, null, 2)}</pre>` : ''}
+${payload.actionUrl ? `<a href="${payload.actionUrl}" style="display: inline-block; background: ${color}; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; margin-top: 16px;">${payload.actionLabel || 'View Details'}</a>` : ''}
+</div>
+<div style="background: #1f2937; color: #9ca3af; padding: 16px; font-size: 12px; border-radius: 0 0 8px 8px;">Javari Engineering OS • CR AudioViz AI</div>
+</div></body></html>`;
+
+  try {
+    await resend.emails.send({
+      from: 'Javari AI <alerts@craudiovizai.com>',
+      to: ALERT_EMAIL,
+      subject: `${emoji} [${payload.severity}] ${payload.title}`,
+      html,
+    });
+  } catch (e) {
+    console.error('Email error:', e);
+  }
+}
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300; // 5 minutes max
