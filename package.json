@@ -1,0 +1,42 @@
+{
+  "name": "javari-engineering-os",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@9.15.0",
+  "description": "Autonomous Engineering OS for CR AudioViz AI - The platform that helps everyone achieve their dreams",
+  "scripts": {
+    "dev": "pnpm -r dev",
+    "build": "pnpm -r build",
+    "lint": "pnpm -r lint",
+    "test": "pnpm -r test",
+    "format": "prettier -w .",
+    "typecheck": "pnpm -r typecheck",
+    "db:migrate": "node packages/db/scripts/migrate.mjs",
+    "audit:full": "node packages/auditops-runner/dist/cli.js run --scope full",
+    "audit:canary": "node packages/auditops-runner/dist/cli.js run --scope canary",
+    "audit:gate": "node packages/auditops-runner/dist/cli.js run --scope gate",
+    "orchestrator:run": "node packages/orchestrator/dist/cli.js runOnce",
+    "proof:report": "node packages/selfheal/dist/proofReport.js",
+    "proof:test": "node packages/selfheal/dist/proofTests.js"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "eslint": "^9.7.0",
+    "prettier": "^3.3.3",
+    "typescript": "^5.5.4"
+  },
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=9.0.0"
+  },
+  "keywords": [
+    "javari",
+    "autonomous",
+    "engineering-os",
+    "self-healing",
+    "auditops",
+    "cr-audioviz-ai"
+  ],
+  "author": "CR AudioViz AI, LLC",
+  "license": "UNLICENSED"
+}
