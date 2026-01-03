@@ -1,0 +1,58 @@
+name: Nightly Full Audit
+
+on:
+  schedule:
+    - cron: "0 2 * * *" # 2:00 AM UTC daily
+  workflow_dispatch: {}
+
+jobs:
+  full_audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    
+    env:
+      NODE_ENV: production
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build packages
+        run: pnpm build
+
+      - name: Run Full Audit
+        run: pnpm audit:full
+        continue-on-error: true
+
+      - name: Generate Proof Report
+        run: pnpm proof:report
+        continue-on-error: true
+
+      - name: Upload Audit Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly_audit_${{ github.run_number }}
+          path: output/
+          if-no-files-found: warn
+          retention-days: 30
