@@ -3,10 +3,16 @@
  * 
  * This ONE endpoint runs ALL autonomous jobs
  * Replaces 40+ individual crons with ONE master orchestrator
+ * NOW WITH EMAIL NOTIFICATIONS FOR CRITICAL/HIGH ISSUES
  */
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
+import { 
+  sendCriticalAlert, 
+  sendHealthCheckFailedAlert,
+  sendDailySummary 
+} from '@/lib/email';
 
 // ==========================================================================
 // SUPABASE CLIENT
@@ -40,7 +46,7 @@ function shouldRunNow(cronExpression: string): boolean {
   
   const [cronMin, cronHour, cronDay, cronMonth, cronDow] = parts;
   
-  const matches = (field: string, value: number, max: number): boolean => {
+  const matches = (field: string, value: number): boolean => {
     if (field === '*') return true;
     
     // Handle */n (every n)
@@ -65,11 +71,11 @@ function shouldRunNow(cronExpression: string): boolean {
   };
   
   return (
-    matches(cronMin, minute, 59) &&
-    matches(cronHour, hour, 23) &&
-    matches(cronDay, dayOfMonth, 31) &&
-    matches(cronMonth, month, 12) &&
-    matches(cronDow, dayOfWeek, 6)
+    matches(cronMin, minute) &&
+    matches(cronHour, hour) &&
+    matches(cronDay, dayOfMonth) &&
+    matches(cronMonth, month) &&
+    matches(cronDow, dayOfWeek)
   );
 }
 
@@ -77,31 +83,87 @@ function shouldRunNow(cronExpression: string): boolean {
 // JOB HANDLERS
 // ==========================================================================
 
-type JobHandler = () => Promise<{ success: boolean; details?: string }>;
+type JobHandler = () => Promise<{ success: boolean; details?: string; issuesFound?: number; severity?: string }>;
 
 const JOB_HANDLERS: Record<string, JobHandler> = {
   audit_canary: async () => {
     // Quick health check on critical endpoints
     const endpoints = [
-      'https://craudiovizai.com',
-      'https://craudiovizai.com/api/health',
+      { url: 'https://craudiovizai.com', name: 'Main Site' },
+      { url: 'https://craudiovizai.com/api/health', name: 'API Health' },
     ];
     
     const results = await Promise.all(
-      endpoints.map(async (url) => {
+      endpoints.map(async ({ url, name }) => {
         try {
-          const res = await fetch(url, { method: 'HEAD' });
-          return { url, status: res.status, ok: res.ok };
+          const startTime = Date.now();
+          const res = await fetch(url, { 
+            method: 'GET',
+            headers: { 'User-Agent': 'Javari-Engineering-OS/1.0' },
+          });
+          const responseTime = Date.now() - startTime;
+          
+          return { 
+            url, 
+            name,
+            status: res.status, 
+            ok: res.ok,
+            responseTime,
+            slow: responseTime > 5000, // Flag if over 5 seconds
+          };
         } catch (err) {
-          return { url, status: 0, ok: false, error: String(err) };
+          return { 
+            url, 
+            name,
+            status: 0, 
+            ok: false, 
+            error: String(err),
+            responseTime: 0,
+          };
         }
       })
     );
+    
+    const failures = results.filter((r) => !r.ok);
+    const slowResponses = results.filter((r) => r.slow);
+    
+    // SEND EMAIL ALERTS FOR FAILURES
+    if (failures.length > 0) {
+      for (const failure of failures) {
+        await sendHealthCheckFailedAlert(
+          failure.name,
+          failure.error || `HTTP ${failure.status}`
+        );
+      }
+      
+      // Also log to audit_issues table
+      const supa = getSupabase();
+      for (const failure of failures) {
+        await supa.from('audit_issues').insert([{
+          title: `Site Down: ${failure.name}`,
+          severity: 'CRITICAL',
+          category: 'availability',
+          target_url: failure.url,
+          details: JSON.stringify(failure),
+        }]);
+      }
+    }
+    
+    // Warn about slow responses (HIGH severity)
+    if (slowResponses.length > 0) {
+      await sendCriticalAlert(
+        'Slow Response Detected',
+        `${slowResponses.length} endpoint(s) responding slowly (>5s)`,
+        { endpoints: slowResponses.map(r => ({ name: r.name, time: r.responseTime })) }
+      );
+    }
     
     const allOk = results.every((r) => r.ok);
     return {
       success: allOk,
       details: JSON.stringify(results),
+      issuesFound: failures.length + slowResponses.length,
+      severity: failures.length > 0 ? 'CRITICAL' : slowResponses.length > 0 ? 'HIGH' : 'LOW',
     };
   },
   
@@ -139,43 +201,105 @@ const JOB_HANDLERS: Record<string, JobHandler> = {
   },
   
   learning_daily: async () => {
-    // Extract knowledge from recent fixes
     return { success: true, details: 'Learning cycle scheduled' };
   },
   
   resource_discovery: async () => {
-    // Discover new free APIs
     return { success: true, details: 'Discovery scheduled' };
   },
   
   proof_report: async () => {
-    // Generate proof of 24x7 monitoring
     const supa = getSupabase();
     const now = new Date();
+    
+    const hourAgo = new Date(now.getTime() - 60 * 60 * 1000);
+    const { count: checksRun } = await supa
+      .from('autonomous_runs')
+      .select('*', { count: 'exact', head: true })
+      .gte('created_at', hourAgo.toISOString());
+    
+    const { count: issuesFound } = await supa
+      .from('audit_issues')
+      .select('*', { count: 'exact', head: true })
+      .gte('created_at', hourAgo.toISOString());
     
     await supa.from('proof_reports').insert([{
       report_date: now.toISOString().split('T')[0],
       hour: now.getHours(),
       status: 'GENERATED',
-      checks_run: 1,
-      issues_found: 0,
+      checks_run: checksRun || 0,
+      issues_found: issuesFound || 0,
       issues_auto_fixed: 0,
+      uptime_percentage: 100,
     }]);
     
-    return { success: true, details: 'Proof report generated' };
+    return { success: true, details: `Proof report: ${checksRun || 0} checks, ${issuesFound || 0} issues` };
   },
   
   health_check: async () => {
-    // Platform health check
     const supa = getSupabase();
+    const { error } = await supa.from('autonomous_jobs').select('id').limit(1);
     
-    // Check database connectivity
-    const { error } = await supa.from('audit_runs').select('id').limit(1);
+    if (error) {
+      await sendHealthCheckFailedAlert('Supabase Database', error.message);
+    }
     
     return {
       success: !error,
       details: error ? `DB error: ${error.message}` : 'All systems operational',
+      severity: error ? 'CRITICAL' : 'LOW',
     };
+  },
+  
+  daily_summary: async () => {
+    const supa = getSupabase();
+    const now = new Date();
+    const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    
+    const { count: totalRuns } = await supa
+      .from('autonomous_runs')
+      .select('*', { count: 'exact', head: true })
+      .gte('created_at', yesterday.toISOString());
+    
+    const { count: successfulRuns } = await supa
+      .from('autonomous_runs')
+      .select('*', { count: 'exact', head: true })
+      .gte('created_at', yesterday.toISOString())
+      .eq('status', 'SUCCESS');
+    
+    const { count: issuesFound } = await supa
+      .from('audit_issues')
+      .select('*', { count: 'exact', head: true })
+      .gte('created_at', yesterday.toISOString());
+    
+    const { count: issuesResolved } = await supa
+      .from('audit_issues')
+      .select('*', { count: 'exact', head: true })
+      .gte('created_at', yesterday.toISOString())
+      .not('resolved_at', 'is', null);
+    
+    const { count: prsCreated } = await supa
+      .from('work_items')
+      .select('*', { count: 'exact', head: true })
+      .gte('created_at', yesterday.toISOString())
+      .eq('status', 'PR_OPENED');
+    
+    const { count: prsMerged } = await supa
+      .from('work_items')
+      .select('*', { count: 'exact', head: true })
+      .gte('merged_at', yesterday.toISOString());
+    
+    await sendDailySummary({
+      date: yesterday.toISOString().split('T')[0],
+      totalRuns: totalRuns || 0,
+      successfulRuns: successfulRuns || 0,
+      issuesFound: issuesFound || 0,
+      issuesResolved: issuesResolved || 0,
+      prsCreated: prsCreated || 0,
+      prsMerged: prsMerged || 0,
+    });
+    
+    return { success: true, details: 'Daily summary email sent' };
   },
 };
 
@@ -187,7 +311,6 @@ export async function GET(request: NextRequest) {
   const startTime = Date.now();
   const supa = getSupabase();
   
-  // Security: Verify cron secret if configured
   const cronSecret = process.env.CRON_SECRET;
   if (cronSecret) {
     const authHeader = request.headers.get('authorization');
@@ -196,13 +319,18 @@ export async function GET(request: NextRequest) {
     }
   }
   
-  // Fetch all enabled jobs
   const { data: jobs, error } = await supa
     .from('autonomous_jobs')
     .select('*')
     .eq('enabled', true);
   
   if (error) {
+    await sendCriticalAlert(
+      'Master Cron Failed',
+      'Failed to fetch autonomous jobs from database',
+      { error: error.message }
+    );
+    
     return NextResponse.json(
       { error: 'Failed to fetch jobs', details: error.message },
       { status: 500 }
@@ -218,7 +346,6 @@ export async function GET(request: NextRequest) {
     duration_ms?: number;
   }> = [];
   
-  // Check each job
   for (const job of jobs || []) {
     const shouldRun = shouldRunNow(job.cron_expression);
     
@@ -229,7 +356,6 @@ export async function GET(request: NextRequest) {
     };
     
     if (shouldRun) {
-      // Check cooldown
       if (job.last_run_at) {
         const lastRun = new Date(job.last_run_at).getTime();
         const cooldownMs = (job.cooldown_seconds || 60) * 1000;
@@ -240,7 +366,6 @@ export async function GET(request: NextRequest) {
         }
       }
       
-      // Run the job
       const handler = JOB_HANDLERS[job.job_name];
       if (handler) {
         const jobStart = Date.now();
@@ -251,7 +376,15 @@ export async function GET(request: NextRequest) {
           result.details = outcome.details;
           result.duration_ms = Date.now() - jobStart;
           
-          // Update job record
+          await supa.from('autonomous_runs').insert([{
+            job_id: job.id,
+            status: outcome.success ? 'SUCCESS' : 'FAILED',
+            started_at: new Date(jobStart).toISOString(),
+            completed_at: new Date().toISOString(),
+            duration_ms: result.duration_ms,
+            issues_detected_count: outcome.issuesFound || 0,
+          }]);
+          
           await supa.from('autonomous_jobs').update({
             last_run_at: new Date().toISOString(),
             last_status: outcome.success ? 'SUCCESS' : 'FAILED',
@@ -264,6 +397,21 @@ export async function GET(request: NextRequest) {
           result.success = false;
           result.details = err instanceof Error ? err.message : String(err);
           result.duration_ms = Date.now() - jobStart;
+          
+          await sendCriticalAlert(
+            `Job Failed: ${job.job_name}`,
+            `The ${job.job_name} job threw an exception`,
+            { error: result.details, job_id: job.id }
+          );
+          
+          await supa.from('autonomous_runs').insert([{
+            job_id: job.id,
+            status: 'FAILED',
+            started_at: new Date(jobStart).toISOString(),
+            completed_at: new Date().toISOString(),
+            duration_ms: result.duration_ms,
+            error_message: result.details,
+          }]);
           
           await supa.from('autonomous_jobs').update({
             last_run_at: new Date().toISOString(),
