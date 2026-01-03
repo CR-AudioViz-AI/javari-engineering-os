@@ -119,7 +119,7 @@ export async function GET(request: Request) {
     total_duration_ms: Date.now() - startTime,
     results,
     created_at: new Date().toISOString(),
-  }).catch(() => {});
+  });
   
   const successCount = results.filter(r => r.status === 'success').length;
   const errorCount = results.filter(r => r.status === 'error').length;
