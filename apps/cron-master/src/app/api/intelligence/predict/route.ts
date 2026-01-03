@@ -130,7 +130,7 @@ async function executePreventiveAction(action: string, projectId: string): Promi
     project_id: projectId,
     executed_at: new Date().toISOString(),
     status: 'executed',
-  }).catch(() => {});
+  });
   
   // Implement specific preventive actions based on type
   switch (action) {
@@ -214,7 +214,7 @@ export async function GET(request: Request) {
       recommendations: prediction.recommendations,
       preventive_actions: prediction.preventiveActions,
       created_at: new Date().toISOString(),
-    }).catch(() => {});
+    });
   }
   
   // Execute preventive actions if enabled
