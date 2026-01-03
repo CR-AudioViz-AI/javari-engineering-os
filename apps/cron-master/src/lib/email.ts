@@ -11,7 +11,8 @@ const resend = process.env.RESEND_API_KEY
   : null;
 
 const ALERT_EMAIL = process.env.ALERT_EMAIL || 'royhenderson@craudiovizai.com';
-const FROM_EMAIL = 'Javari Engineering <alerts@craudiovizai.com>';
+// Use Resend's default domain until craudiovizai.com is verified
+const FROM_EMAIL = 'Javari Engineering <onboarding@resend.dev>';
 
 export type AlertSeverity = 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW';
 export type AlertType = 'issue' | 'deployment_failed' | 'health_check' | 'pr_created' | 'daily_summary' | 'weekly_report';
