@@ -1,0 +1,50 @@
+name: Hourly Canary Audit
+
+on:
+  schedule:
+    - cron: "0 * * * *" # Every hour
+  workflow_dispatch: {}
+
+jobs:
+  canary_audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    
+    env:
+      NODE_ENV: production
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build packages
+        run: pnpm build
+
+      - name: Run Canary Audit
+        run: pnpm audit:canary
+
+      - name: Upload Canary Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: canary_audit_${{ github.run_number }}
+          path: output/
+          if-no-files-found: warn
+          retention-days: 7
