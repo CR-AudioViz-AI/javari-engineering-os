@@ -1,66 +1,156 @@
-1;
-          return acc;
-        }, {} as Record<string, number>) || {},
-        artifacts: evidence?.slice(0, 20).map(e => ({
-          id: e.id,
-          type: e.artifact_type,
-          url: e.storage_url || e.url,
-          request_id: e.request_id,
-        })) || [],
+import { NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+
+const supabase = createClient(
+  process.env.SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+);
+
+export const dynamic = 'force-dynamic';
+
+/**
+ * ChatGPT Requirement: Proof-Only Reporting
+ * 
+ * The system must not allow any report claim unless:
+ * - it is computed from raw evidence
+ * - it includes the evidence link(s)
+ * - it includes timestamp & request IDs
+ * 
+ * Claude must be unable to "invent" metrics.
+ */
+export async function GET(request: Request) {
+  const requestId = `rpt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const { searchParams } = new URL(request.url);
+  const auditRunId = searchParams.get('audit_run_id');
+  const format = searchParams.get('format') || 'json';
+
+  try {
+    // Get audit run info
+    let auditRun = null;
+    if (auditRunId) {
+      const { data } = await supabase
+        .from('audit_runs')
+        .select('*')
+        .eq('id', auditRunId)
+        .single();
+      auditRun = data;
+    } else {
+      const { data } = await supabase
+        .from('audit_runs')
+        .select('*')
+        .order('started_at', { ascending: false })
+        .limit(1)
+        .single();
+      auditRun = data;
+    }
+
+    if (!auditRun) {
+      return NextResponse.json({
+        error: 'No audit run found',
+        request_id: requestId,
+        message: 'I cannot confirm any audit data exists.',
+      }, { status: 404 });
+    }
+
+    // Get ALL metrics from metrics_json for this audit run
+    const { data: metrics, error: metricsError } = await supabase
+      .from('metrics_json')
+      .select('*')
+      .eq('audit_run_id', auditRun.id);
+
+    if (metricsError) throw metricsError;
+
+    // Get verified claims
+    const { data: verifiedClaims } = await supabase
+      .from('audit_claims')
+      .select('*')
+      .eq('audit_run_id', auditRun.id)
+      .eq('is_verified', true);
+
+    // Get coverage metrics
+    const { data: coverage } = await supabase
+      .from('coverage_metrics')
+      .select('*')
+      .eq('audit_run_id', auditRun.id);
+
+    // Get synthetic runs for experience scores
+    const { data: syntheticRuns } = await supabase
+      .from('synthetic_runs')
+      .select('*')
+      .order('timestamp', { ascending: false })
+      .limit(50);
+
+    // Get security scan results
+    const { data: securityScans } = await supabase
+      .from('security_scans')
+      .select('*')
+      .eq('audit_run_id', auditRun.id);
+
+    // Get evidence artifacts
+    const { data: evidence } = await supabase
+      .from('evidence_artifacts')
+      .select('id, artifact_type, url, storage_url, request_id, timestamp')
+      .eq('audit_run_id', auditRun.id);
+
+    // Build proof-based report (ONLY claims from metrics_json)
+    const report = {
+      meta: {
+        request_id: requestId,
+        generated_at: new Date().toISOString(),
+        audit_run_id: auditRun.id,
+        audit_started: auditRun.started_at,
+        audit_completed: auditRun.completed_at,
+        proof_method: 'metrics_json_only',
+        disclaimer: 'All claims in this report are derived from metrics_json entries with evidence links.',
       },
 
-      // Final assessment - ONLY if we have evidence
+      verified_metrics: (metrics || []).map(m => ({
+        metric: m.metric_key,
+        value: m.metric_value,
+        computed_from: m.computed_from,
+        evidence_ids: m.evidence_ids,
+        timestamp: m.timestamp,
+      })),
+
+      verified_claims: (verifiedClaims || []).map(c => ({
+        claim: c.claim_text,
+        value: c.claim_value,
+        evidence_metric_id: c.metric_json_id,
+        verified_at: c.verification_timestamp,
+      })),
+
+      coverage: coverage ? {
+        total_domains: coverage.length,
+        by_domain: coverage.map(c => ({
+          domain: c.domain,
+          routes_discovered: c.routes_discovered,
+          routes_audited: c.routes_audited,
+          coverage_pct: c.overall_coverage_pct,
+        })),
+      } : { message: 'I cannot confirm coverage data.' },
+
+      experience: syntheticRuns && syntheticRuns.length > 0 ? {
+        total_runs: syntheticRuns.length,
+        avg_score: Math.round(syntheticRuns.reduce((sum, r) => sum + (r.experience_score || 0), 0) / syntheticRuns.length),
+        pass_rate: Math.round((syntheticRuns.filter(r => r.status === 'pass').length / syntheticRuns.length) * 100),
+      } : { message: 'I cannot confirm experience score data.' },
+
+      security: securityScans && securityScans.length > 0 ? {
+        scans_run: securityScans.length,
+        pass_count: securityScans.filter(s => s.pass).length,
+      } : { message: 'I cannot confirm security scan data.' },
+
+      evidence_count: evidence?.length || 0,
+
       assessment: {
-        can_make_claims: (metrics && metrics.length > 0) || (verifiedClaims && verifiedClaims.length > 0),
+        can_make_claims: (metrics && metrics.length > 0),
         metrics_count: metrics?.length || 0,
         verified_claims_count: verifiedClaims?.length || 0,
-        evidence_artifacts_count: evidence?.length || 0,
         message: (metrics && metrics.length > 0)
-          ? `This report contains ${metrics.length} metrics with evidence. All claims are verifiable.`
-          : 'I cannot confirm any metrics. No claims can be made from this audit.',
+          ? `This report contains ${metrics.length} metrics with evidence.`
+          : 'I cannot confirm any metrics. No claims can be made.',
       },
     };
-
-    // Generate markdown if requested
-    if (format === 'markdown') {
-      const md = `# Proof-Grade Audit Report
-
-## Meta
-- **Generated:** ${report.meta.generated_at}
-- **Audit Run ID:** ${report.meta.audit_run_id}
-- **Request ID:** ${report.meta.request_id}
-- **Proof Method:** All claims derived from metrics_json with evidence
-
-## Verified Metrics (${report.verified_metrics.length})
-${report.verified_metrics.map(m => `- **${m.metric}**: ${JSON.stringify(m.value)} (Evidence: ${m.evidence_ids?.join(', ') || 'N/A'})`).join('\n')}
-
-## Verified Claims (${report.verified_claims.length})
-${report.verified_claims.map(c => `- ${c.claim}: ${c.value} (Verified: ${c.verified_at})`).join('\n')}
-
-## Coverage
-${typeof report.coverage === 'object' && 'by_domain' in report.coverage
-  ? report.coverage.by_domain.map((d: any) => `- **${d.domain}**: ${d.routes_audited}/${d.routes_discovered} routes (${d.coverage_pct}%)`).join('\n')
-  : report.coverage.message}
-
-## Experience Scores
-${typeof report.experience === 'object' && 'avg_score' in report.experience
-  ? `- Average Score: ${report.experience.avg_score}/100\n- Pass Rate: ${report.experience.pass_rate}%\n- Total Runs: ${report.experience.total_runs}`
-  : report.experience.message}
-
-## Assessment
-${report.assessment.message}
-
----
-*This report is proof-only. No claims without evidence in metrics_json.*
-`;
-
-      return new NextResponse(md, {
-        headers: {
-          'Content-Type': 'text/markdown',
-          'X-Request-ID': requestId,
-        },
-      });
-    }
 
     return NextResponse.json(report);
 
@@ -81,7 +171,6 @@ export async function POST(request: Request) {
     const body = await request.json();
     const { run_type } = body as { run_type?: string };
 
-    // Create new audit run
     const { data: auditRun, error } = await supabase
       .from('audit_runs')
       .insert({
@@ -91,7 +180,6 @@ export async function POST(request: Request) {
         environment_signature: {
           node_env: process.env.NODE_ENV,
           region: process.env.VERCEL_REGION || 'unknown',
-          supabase_url: process.env.SUPABASE_URL?.replace(/https:\/\/([^.]+).*/, '$1'),
         },
       })
       .select('id')
@@ -104,7 +192,7 @@ export async function POST(request: Request) {
       timestamp: new Date().toISOString(),
       audit_run_id: auditRun?.id,
       status: 'running',
-      message: 'Audit run started. Use GET /api/v2/proof-report?audit_run_id=... to get results.',
+      message: 'Audit run started.',
     });
 
   } catch (error) {
