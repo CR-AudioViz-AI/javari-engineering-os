@@ -1,0 +1,45 @@
+#!/usr/bin/env sh
+. "$(dirname -- "$0")/_/husky.sh"
+
+# ASSET FREEZE - STEP 1 OF 6
+# Block binary asset commits during migration
+
+echo ""
+echo "================================================================================"
+echo "⚠️  ASSET FREEZE ACTIVE - STEP 1 OF 6"
+echo "================================================================================"
+echo ""
+echo "Checking for binary assets in commit..."
+echo ""
+
+# Get staged files
+STAGED_FILES=$(git diff --cached --name-only --diff-filter=ACM)
+
+# Blocked extensions
+BLOCKED_PATTERN="\.(png|jpg|jpeg|gif|svg|webp|ico|bmp|mp4|mov|avi|webm|mkv|mp3|wav|ogg|m4a|flac|aac|pdf|doc|docx|xls|xlsx|ppt|pptx|zip|tar|gz|rar|7z|ttf|otf|woff|woff2|eot|obj|fbx|gltf|glb)$"
+
+BLOCKED_FILES=$(echo "$STAGED_FILES" | grep -iE "$BLOCKED_PATTERN" || true)
+
+if [ -n "$BLOCKED_FILES" ]; then
+  echo "❌ ASSET FREEZE VIOLATION"
+  echo ""
+  echo "Cannot commit the following binary files:"
+  echo "$BLOCKED_FILES" | sed 's/^/  - /'
+  echo ""
+  echo "================================================================================"
+  echo "Asset Freeze: No binary files may be committed."
+  echo "Use R2 ingestion pipeline only."
+  echo "================================================================================"
+  echo ""
+  echo "To upload assets:"
+  echo "  1. Use: tsx scripts/activate-r2-ingestion.ts"
+  echo "  2. Assets stored in Cloudflare R2"
+  echo "  3. Reference via: https://cdn.craudiovizai.com/..."
+  echo ""
+  echo "This freeze is STEP 1 of 6 in the asset migration."
+  echo ""
+  exit 1
+fi
+
+echo "✅ No binary assets detected - push allowed"
+echo ""

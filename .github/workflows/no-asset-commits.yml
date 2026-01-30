@@ -1,0 +1,92 @@
+name: Asset Freeze - Block Binary Commits
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - master
+      - develop
+
+jobs:
+  block-binary-assets:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for binary files
+        run: |
+          echo "================================================================================"
+          echo "ASSET FREEZE ENFORCEMENT - STEP 1 OF 6"
+          echo "================================================================================"
+          echo ""
+          echo "Checking for binary asset commits..."
+          echo ""
+          
+          # Define blocked extensions
+          BLOCKED_EXTENSIONS=(
+            "png" "jpg" "jpeg" "webp" "gif" "svg" "ico" "bmp"
+            "mp4" "mov" "avi" "webm" "mkv"
+            "mp3" "wav" "ogg" "m4a" "flac" "aac"
+            "pdf" "doc" "docx" "xls" "xlsx" "ppt" "pptx"
+            "zip" "tar" "gz" "rar" "7z"
+            "ttf" "otf" "woff" "woff2" "eot"
+            "obj" "fbx" "gltf" "glb"
+          )
+          
+          # Get changed files
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            FILES=$(git diff --name-only ${{ github.event.pull_request.base.sha }} ${{ github.sha }})
+          else
+            FILES=$(git diff --name-only HEAD~1 HEAD)
+          fi
+          
+          BLOCKED_FILES=""
+          
+          # Check each file
+          for file in $FILES; do
+            ext="${file##*.}"
+            ext_lower=$(echo "$ext" | tr '[:upper:]' '[:lower:]')
+            
+            for blocked in "${BLOCKED_EXTENSIONS[@]}"; do
+              if [ "$ext_lower" = "$blocked" ]; then
+                BLOCKED_FILES="$BLOCKED_FILES\n  - $file"
+                break
+              fi
+            done
+          done
+          
+          # Report results
+          if [ -n "$BLOCKED_FILES" ]; then
+            echo "❌ ASSET FREEZE VIOLATION"
+            echo ""
+            echo "The following binary assets were detected:"
+            echo -e "$BLOCKED_FILES"
+            echo ""
+            echo "================================================================================"
+            echo "Asset Freeze: No binary files may be committed."
+            echo "Use R2 ingestion pipeline only."
+            echo "================================================================================"
+            echo ""
+            echo "To upload assets:"
+            echo "1. Use the CRAV Asset Ingestion System"
+            echo "2. Assets will be stored in Cloudflare R2"
+            echo "3. Reference via CDN: https://cdn.craudiovizai.com/..."
+            echo ""
+            echo "This freeze is STEP 1 of 6 in the organization-wide asset migration."
+            echo "Contact platform team for assistance."
+            echo ""
+            exit 1
+          else
+            echo "✅ No binary assets detected - commit allowed"
+            echo ""
+          fi
+
+      - name: Freeze enforcement complete
+        if: success()
+        run: |
+          echo "✅ Asset freeze check passed"
